@@ -142,7 +142,7 @@ class BoxFilter : public ImageFilter
 public:
 	float filter(float x, float y) const
 	{
-		if (fabsf(x) < 0.5f && fabs(y) < 0.5f)
+		if (fabsf(x) <= 0.5f && fabs(y) <= 0.5f)
 		{
 			return 1.0f;
 		}
@@ -186,14 +186,13 @@ public:
 		}
 	}
 
-	float filmic(unsigned char x) {
-		x *= (((x * ((0.15 * x) + (0.5 * 0.1))) + (0.2 * 0.02)) / (x * ((0.15 * x) + 0.5) + (0.2 * 0.3))) - (0.02 / 0.3);
-		return x;
+	float filmic(float x) {
+		return (((x * ((0.15 * x) + (0.5 * 0.1))) + (0.2 * 0.02)) / (x * ((0.15 * x) + 0.5) + (0.2 * 0.3))) - (0.02 / 0.3);
 	}
 
 	void tonemap(int x, int y, unsigned char& r, unsigned char& g, unsigned char& b, float exposure = 1.0f)
 	{
-		int pos = x * y;
+		int pos = y * width + x;
 		Colour c = film[pos];
 		if (SPP > 0) c = c / (float)SPP;
 
@@ -201,20 +200,20 @@ public:
 		c.g = filmic(c.g);
 		c.b = filmic(c.b);
 
-		unsigned char w = filmic(11.2);
+		float w = filmic(11.2);
 		float e = 1.f / 2.2f;
 
-		c.r = std::powf(r/w, e);
-		c.g = std::powf(g / w, e);
-		c.b = std::powf(b / w, e);
+		c.r = std::powf(c.r/w, e);
+		c.g = std::powf(c.g / w, e);
+		c.b = std::powf(c.b / w, e);
 
 		c.r = std::clamp(c.r, 0.f, 1.f);
 		c.g = std::clamp(c.g, 0.f, 1.f);
 		c.b = std::clamp(c.b, 0.f, 1.f);
 
-		r = (unsigned char)c.r;
-		g = (unsigned char)c.g;
-		b = (unsigned char)c.b;
+		r = (unsigned char)(c.r * 255.f);
+		g = (unsigned char)(c.g * 255.f);
+		b = (unsigned char)(c.b * 255.f);
 
 		// Return a tonemapped pixel at coordinates x, y
 	}

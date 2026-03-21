@@ -1,5 +1,3 @@
-
-
 #include "GEMLoader.h"
 #include "Renderer.h"
 #include "SceneLoader.h"
@@ -30,7 +28,7 @@ void runTests()
 int main(int argc, char *argv[])
 {
 	// Add call to tests if required
-	runTests();
+	//runTests();
 	
 	// Initialize default parameters
 	std::string sceneName = "cornell-box";
