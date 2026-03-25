@@ -120,10 +120,15 @@ public:
 		}
 		return intersection;
 	}
+
 	Light* sampleLight(Sampler* sampler, float& pmf)
 	{
-		return NULL;
+		int numLights = lights.size();
+		int li = (int)(sampler->next() * numLights);
+		pmf = 1.f / numLights;
+		return lights[li];
 	}
+
 	// Do not modify any code below this line
 	void init(std::vector<Triangle> meshTriangles, std::vector<BSDF*> meshMaterials, Light* _background)
 	{
