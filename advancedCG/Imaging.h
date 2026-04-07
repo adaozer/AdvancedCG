@@ -154,6 +154,40 @@ public:
 	}
 };
 
+class GaussianFilter : public ImageFilter
+{
+public:
+	float filter(float x, float y) const
+	{
+		if (fabsf(x) <= 0.5f && fabs(y) <= 0.5f)
+		{
+			return 1.0f;
+		}
+		return 0;
+	}
+	int size() const
+	{
+		return 0;
+	}
+};
+
+class MitchellNetravali : public ImageFilter
+{
+public:
+	float filter(float x, float y) const
+	{
+		if (fabsf(x) <= 0.5f && fabs(y) <= 0.5f)
+		{
+			return 1.0f;
+		}
+		return 0;
+	}
+	int size() const
+	{
+		return 0;
+	}
+};
+
 class Film
 {
 public:

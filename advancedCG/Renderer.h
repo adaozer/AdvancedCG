@@ -39,7 +39,23 @@ public:
 	}
 	Colour computeDirect(ShadingData shadingData, Sampler* sampler)
 	{
-		// Is surface is specular we cannot computing direct lighting
+		float pmf;
+		Light* lightSample = scene->sampleLight(sampler, pmf);
+		float pdf;
+		Colour emmittedColour;
+		Vec3 samp = lightSample->sample(shadingData, sampler, emmittedColour, pdf);
+
+		if (lightSample->isArea()) {
+			Vec3 wi = samp - shadingData.x;
+			wi = wi.normalize();
+			float geometryTerm = Dot(wi, shadingData.sNormal);
+			if (scene->visible(shadingData.x, shadingData.x + wi * 1000000)) {
+			Colour bsdf = shadingData.bsdf->evaluate(shadingData, wi);
+			return bsdf * emmittedColour * (geometryTerm / (pdf * pmf));
+			}
+			return Colour(0.0f, 0.0f, 0.0f);
+		}
+
 		if (shadingData.bsdf->isPureSpecular() == true)
 		{
 			return Colour(0.0f, 0.0f, 0.0f);
@@ -92,6 +108,27 @@ public:
 		return Colour(0.0f, 0.0f, 0.0f);
 	}
 	void render()
+	{
+		film->incrementSPP();
+		for (unsigned int y = 0; y < film->height; y++)
+		{
+			for (unsigned int x = 0; x < film->width; x++)
+			{
+				float px = x + 0.5f;
+				float py = y + 0.5f;
+				Ray ray = scene->camera.generateRay(px, py);
+				Colour col = viewNormals(ray);
+				//Colour col = albedo(ray);
+				film->splat(px, py, col);
+				unsigned char r = (unsigned char)(col.r * 255);
+				unsigned char g = (unsigned char)(col.g * 255);
+				unsigned char b = (unsigned char)(col.b * 255);
+				film->tonemap(x, y, r, g, b);
+				canvas->draw(x, y, r, g, b);
+			}
+		}
+	}
+	void render2()
 	{
 		film->incrementSPP();
 		for (unsigned int y = 0; y < film->height; y++)
