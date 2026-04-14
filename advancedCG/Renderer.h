@@ -49,7 +49,10 @@ public:
 			Vec3 wi = samp - shadingData.x;
 			wi = wi.normalize();
 			float geometryTerm = Dot(wi, shadingData.sNormal);
-			if (scene->visible(shadingData.x, shadingData.x + wi * 1000000)) {
+			if (geometryTerm <= 0.f) {
+				return Colour(0.f, 0.f, 0.f);
+			}
+			if (scene->visible(shadingData.x, samp)) {
 			Colour bsdf = shadingData.bsdf->evaluate(shadingData, wi);
 			return bsdf * emmittedColour * (geometryTerm / (pdf * pmf));
 			}
@@ -60,13 +63,56 @@ public:
 		{
 			return Colour(0.0f, 0.0f, 0.0f);
 		}
-		// Compute direct lighting here
-		return Colour(0.0f, 0.0f, 0.0f);
+		Vec3 wi = samp;
+		float cosTheta = Dot(wi, shadingData.sNormal);
+		if (cosTheta <= 0.f) {
+			return Colour(0.f, 0.f, 0.f);
+		}
+		if (scene->visible(shadingData.x, shadingData.x + wi * 10000000.f)) {
+			Colour bsdf = shadingData.bsdf->evaluate(shadingData, wi);
+			return bsdf * emmittedColour * (cosTheta / (pdf * pmf));		
+		}
+		return Colour(0.f, 0.f, 0.f);
+		
 	}
 	Colour pathTrace(Ray& r, Colour& pathThroughput, int depth, Sampler* sampler)
 	{
-		// Add pathtracer code here
-		return Colour(0.0f, 0.0f, 0.0f);
+		IntersectionData intersection = scene->traverse(r);
+		ShadingData shadingData = scene->calculateShadingData(intersection, r);
+
+		if (shadingData.t == FLT_MAX)
+			return pathThroughput * scene->background->evaluate(r.dir);
+
+		if (shadingData.bsdf->isLight())
+		{
+			if (depth == 0)
+				return pathThroughput * shadingData.bsdf->emit(shadingData, shadingData.wo);
+			return Colour(0.0f, 0.0f, 0.0f);
+		}
+
+		Colour L = pathThroughput * computeDirect(shadingData, sampler);
+
+		if (depth > 3)
+		{
+			float q = std::max({ pathThroughput.r, pathThroughput.g, pathThroughput.b });
+			q = std::min(q, 0.95f);
+			if (sampler->next() > q)
+				return L;
+			pathThroughput = pathThroughput / q;
+		}
+
+		float pdf;
+		Colour bsdfColour;
+		Vec3 wi = shadingData.bsdf->sample(shadingData, sampler, bsdfColour, pdf);
+
+		if (pdf <= 0.0f)
+			return L;
+
+		float cosTheta = fabsf(Dot(wi, shadingData.sNormal));
+		pathThroughput = pathThroughput * bsdfColour * (cosTheta / pdf);
+
+		Ray nextRay(shadingData.x + wi * EPSILON, wi);
+		return L + pathTrace(nextRay, pathThroughput, depth + 1, sampler);
 	}
 	Colour direct(Ray& r, Sampler* sampler)
 	{
@@ -132,7 +178,9 @@ public:
 				float px = x + 0.5f;
 				float py = y + 0.5f;
 				Ray ray = scene->camera.generateRay(px, py);
-				Colour col = viewNormals(ray);
+				Colour throughput(1.0f, 1.0f, 1.0f);
+				Colour col = pathTrace(ray, throughput, 0, &samplers[0]);
+				//Colour col = viewNormals(ray);
 				//Colour col = albedo(ray);
 				film->splat(px, py, col);
 				unsigned char r = (unsigned char)(col.r * 255);
