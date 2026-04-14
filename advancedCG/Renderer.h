@@ -10,6 +10,7 @@
 #include "GamesEngineeringBase.h"
 #include <thread>
 #include <functional>
+#include <atomic>
 
 class RayTracer
 {
@@ -20,6 +21,9 @@ public:
 	MTRandom *samplers;
 	std::thread **threads;
 	int numProcs;
+	std::atomic<int> tiles;
+	int tileSize = 16;
+
 	void init(Scene* _scene, GamesEngineeringBase::Window* _canvas)
 	{
 		scene = _scene;
@@ -54,7 +58,10 @@ public:
 			}
 			if (scene->visible(shadingData.x, samp)) {
 			Colour bsdf = shadingData.bsdf->evaluate(shadingData, wi);
-			return bsdf * emmittedColour * (geometryTerm / (pdf * pmf));
+			float r2 = (samp - shadingData.x).lengthSq();
+			Vec3 lightNormal = lightSample->normal(shadingData, wi);
+			float cosLight = fabsf(Dot(-wi, lightNormal));
+			return bsdf * emmittedColour * (geometryTerm * cosLight) / (r2 * pdf * pmf);
 			}
 			return Colour(0.0f, 0.0f, 0.0f);
 		}
@@ -92,6 +99,8 @@ public:
 
 		Colour L = pathThroughput * computeDirect(shadingData, sampler);
 
+		if (depth > 10) return L;
+
 		if (depth > 3)
 		{
 			float q = std::max({ pathThroughput.r, pathThroughput.g, pathThroughput.b });
@@ -114,6 +123,7 @@ public:
 		Ray nextRay(shadingData.x + wi * EPSILON, wi);
 		return L + pathTrace(nextRay, pathThroughput, depth + 1, sampler);
 	}
+
 	Colour direct(Ray& r, Sampler* sampler)
 	{
 		IntersectionData intersection = scene->traverse(r);
@@ -153,33 +163,56 @@ public:
 		}
 		return Colour(0.0f, 0.0f, 0.0f);
 	}
+
+	void renderTile(int threadID)
+	{
+		int totalTilesX = (film->width + tileSize - 1) / tileSize;
+		int totalTilesY = (film->height + tileSize - 1) / tileSize;
+		int totalTiles = totalTilesX * totalTilesY;
+
+		while (true)
+		{
+			int tileID = tiles.fetch_add(1);
+			if (tileID >= totalTiles) break;
+
+			unsigned int tileX = tileID % totalTilesX;
+			unsigned int tileY = tileID / totalTilesX;
+
+			unsigned int startX = tileX * tileSize;
+			unsigned int startY = tileY * tileSize;
+			unsigned int endX = std::min(startX + (unsigned int)tileSize, film->width);
+			unsigned int endY = std::min(startY + (unsigned int)tileSize, film->height);
+
+			render2(startY, endY, startX, endX, threadID);
+		}
+	}
+
 	void render()
 	{
 		film->incrementSPP();
-		unsigned int rowsPerThread = film->height / numProcs;
+		tiles.store(0);
 		for (unsigned int i = 0; i < numProcs; i++) {
-			unsigned int startY = i * rowsPerThread;
-			unsigned int endY = (i == numProcs - 1) ? film->height: startY + rowsPerThread;
-			threads[i] = new std::thread(&RayTracer::render2, this, startY, endY);
+			threads[i] = new std::thread(&RayTracer::renderTile, this, i);
 		}
 		for (unsigned int i = 0; i < numProcs; i++) {
 			threads[i]->join();
 			delete threads[i];
 		}
 	}
-	void render2(unsigned int startY = 0, unsigned int endY = 0)
+	void render2(unsigned int startY = 0, unsigned int endY = 0, 
+		unsigned int startX = 0, unsigned int endX = 0, unsigned int threadID = 0)
 	{
 		if (endY == 0) endY = film->height;
-
+		if (endX == 0) endX = film->width;
 		for (unsigned int y = startY; y < endY; y++)
 		{
-			for (unsigned int x = 0; x < film->width; x++)
+			for (unsigned int x = startX; x < endX; x++)
 			{
 				float px = x + 0.5f;
 				float py = y + 0.5f;
 				Ray ray = scene->camera.generateRay(px, py);
 				Colour throughput(1.0f, 1.0f, 1.0f);
-				Colour col = pathTrace(ray, throughput, 0, &samplers[0]);
+				Colour col = pathTrace(ray, throughput, 0, &samplers[threadID]);
 				//Colour col = viewNormals(ray);
 				//Colour col = albedo(ray);
 				film->splat(px, py, col);
