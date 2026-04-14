@@ -110,28 +110,22 @@ public:
 	void render()
 	{
 		film->incrementSPP();
-		for (unsigned int y = 0; y < film->height; y++)
-		{
-			for (unsigned int x = 0; x < film->width; x++)
-			{
-				float px = x + 0.5f;
-				float py = y + 0.5f;
-				Ray ray = scene->camera.generateRay(px, py);
-				Colour col = viewNormals(ray);
-				//Colour col = albedo(ray);
-				film->splat(px, py, col);
-				unsigned char r = (unsigned char)(col.r * 255);
-				unsigned char g = (unsigned char)(col.g * 255);
-				unsigned char b = (unsigned char)(col.b * 255);
-				film->tonemap(x, y, r, g, b);
-				canvas->draw(x, y, r, g, b);
-			}
+		unsigned int rowsPerThread = film->height / numProcs;
+		for (unsigned int i = 0; i < numProcs; i++) {
+			unsigned int startY = i * rowsPerThread;
+			unsigned int endY = (i == numProcs - 1) ? film->height: startY + rowsPerThread;
+			threads[i] = new std::thread(&RayTracer::render2, this, startY, endY);
+		}
+		for (unsigned int i = 0; i < numProcs; i++) {
+			threads[i]->join();
+			delete threads[i];
 		}
 	}
-	void render2()
+	void render2(unsigned int startY = 0, unsigned int endY = 0)
 	{
-		film->incrementSPP();
-		for (unsigned int y = 0; y < film->height; y++)
+		if (endY == 0) endY = film->height;
+
+		for (unsigned int y = startY; y < endY; y++)
 		{
 			for (unsigned int x = 0; x < film->width; x++)
 			{
