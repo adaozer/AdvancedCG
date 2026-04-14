@@ -29,7 +29,7 @@ public:
 		scene = _scene;
 		canvas = _canvas;
 		film = new Film();
-		film->init((unsigned int)scene->camera.width, (unsigned int)scene->camera.height, new BoxFilter());
+		film->init((unsigned int)scene->camera.width, (unsigned int)scene->camera.height, new GaussianFilter(1.0f, 1));
 		SYSTEM_INFO sysInfo;
 		GetSystemInfo(&sysInfo);
 		numProcs = sysInfo.dwNumberOfProcessors;
@@ -84,44 +84,52 @@ public:
 	}
 	Colour pathTrace(Ray& r, Colour& pathThroughput, int depth, Sampler* sampler)
 	{
-		IntersectionData intersection = scene->traverse(r);
-		ShadingData shadingData = scene->calculateShadingData(intersection, r);
+		Colour L(0.0f, 0.0f, 0.0f);
+		Ray currentRay = r;
 
-		if (shadingData.t == FLT_MAX)
-			return pathThroughput * scene->background->evaluate(r.dir);
-
-		if (shadingData.bsdf->isLight())
+		for (int d = 0; ; d++)
 		{
-			if (depth == 0)
-				return pathThroughput * shadingData.bsdf->emit(shadingData, shadingData.wo);
-			return Colour(0.0f, 0.0f, 0.0f);
+			IntersectionData intersection = scene->traverse(currentRay);
+			ShadingData shadingData = scene->calculateShadingData(intersection, currentRay);
+
+			if (shadingData.t == FLT_MAX)
+			{
+				L = L + pathThroughput * scene->background->evaluate(currentRay.dir);
+				break;
+			}
+
+			if (shadingData.bsdf->isLight())
+			{
+				if (d == 0)
+					L = L + pathThroughput * shadingData.bsdf->emit(shadingData, shadingData.wo);
+				break;
+			}
+
+			L = L + pathThroughput * computeDirect(shadingData, sampler);
+
+			if (d > 10) break;
+
+			if (d > 3)
+			{
+				float q = std::max({ pathThroughput.r, pathThroughput.g, pathThroughput.b });
+				q = std::min(q, 0.95f);
+				if (sampler->next() > q) break;
+				pathThroughput = pathThroughput / q;
+			}
+
+			float pdf;
+			Colour bsdfColour;
+			Vec3 wi = shadingData.bsdf->sample(shadingData, sampler, bsdfColour, pdf);
+
+			if (pdf <= 0.0f) break;
+
+			float cosTheta = fabsf(Dot(wi, shadingData.sNormal));
+			pathThroughput = pathThroughput * bsdfColour * (cosTheta / pdf);
+
+			currentRay = Ray(shadingData.x + wi * EPSILON, wi);
 		}
 
-		Colour L = pathThroughput * computeDirect(shadingData, sampler);
-
-		if (depth > 10) return L;
-
-		if (depth > 3)
-		{
-			float q = std::max({ pathThroughput.r, pathThroughput.g, pathThroughput.b });
-			q = std::min(q, 0.95f);
-			if (sampler->next() > q)
-				return L;
-			pathThroughput = pathThroughput / q;
-		}
-
-		float pdf;
-		Colour bsdfColour;
-		Vec3 wi = shadingData.bsdf->sample(shadingData, sampler, bsdfColour, pdf);
-
-		if (pdf <= 0.0f)
-			return L;
-
-		float cosTheta = fabsf(Dot(wi, shadingData.sNormal));
-		pathThroughput = pathThroughput * bsdfColour * (cosTheta / pdf);
-
-		Ray nextRay(shadingData.x + wi * EPSILON, wi);
-		return L + pathTrace(nextRay, pathThroughput, depth + 1, sampler);
+		return L;
 	}
 
 	Colour direct(Ray& r, Sampler* sampler)
@@ -198,6 +206,17 @@ public:
 			threads[i]->join();
 			delete threads[i];
 		}
+		// Single display pass after all tiles finish — avoids per-pixel overhead
+		// inside threads and keeps canvas writes off the hot path
+		for (unsigned int y = 0; y < film->height; y++)
+		{
+			for (unsigned int x = 0; x < film->width; x++)
+			{
+				unsigned char r, g, b;
+				film->tonemap(x, y, r, g, b);
+				canvas->draw(x, y, r, g, b);
+			}
+		}
 	}
 	void render2(unsigned int startY = 0, unsigned int endY = 0, 
 		unsigned int startX = 0, unsigned int endX = 0, unsigned int threadID = 0)
@@ -208,19 +227,17 @@ public:
 		{
 			for (unsigned int x = startX; x < endX; x++)
 			{
-				float px = x + 0.5f;
-				float py = y + 0.5f;
+				float px = x + samplers[threadID].next();
+				float py = y + samplers[threadID].next();
 				Ray ray = scene->camera.generateRay(px, py);
 				Colour throughput(1.0f, 1.0f, 1.0f);
 				Colour col = pathTrace(ray, throughput, 0, &samplers[threadID]);
 				//Colour col = viewNormals(ray);
 				//Colour col = albedo(ray);
+				// Firefly clamp: cap luminance so rare bright paths don't dominate
+				float lum = col.Lum();
+				if (lum > 10.0f) col = col * (10.0f / lum);
 				film->splat(px, py, col);
-				unsigned char r = (unsigned char)(col.r * 255);
-				unsigned char g = (unsigned char)(col.g * 255);
-				unsigned char b = (unsigned char)(col.b * 255);
-				film->tonemap(x, y, r, g, b);
-				canvas->draw(x, y, r, g, b);
 			}
 		}
 	}

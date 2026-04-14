@@ -157,34 +157,54 @@ public:
 class GaussianFilter : public ImageFilter
 {
 public:
+	float alpha;
+	int filterRadius;
+	GaussianFilter(float sigma = 1.5f, int radius = 2)
+	{
+		alpha = 1.0f / (2.0f * sigma * sigma);
+		filterRadius = radius;
+	}
 	float filter(float x, float y) const
 	{
-		if (fabsf(x) <= 0.5f && fabs(y) <= 0.5f)
-		{
-			return 1.0f;
-		}
-		return 0;
+		return std::max(0.0f, expf(-alpha * (x * x + y * y)));
 	}
 	int size() const
 	{
-		return 0;
+		return filterRadius;
 	}
 };
 
 class MitchellNetravali : public ImageFilter
 {
 public:
+	float B;
+	float C;
+	MitchellNetravali(float _B = 1.0f / 3.0f, float _C = 1.0f / 3.0f)
+	{
+		B = _B;
+		C = _C;
+	}
+	float mitchell1D(float x) const
+	{
+		x = fabsf(x);
+		if (x < 1.0f)
+			return (1.0f / 6.0f) * ((12.0f - 9.0f * B - 6.0f * C) * x * x * x
+				+ (-18.0f + 12.0f * B + 6.0f * C) * x * x
+				+ (6.0f - 2.0f * B));
+		if (x < 2.0f)
+			return (1.0f / 6.0f) * ((-B - 6.0f * C) * x * x * x
+				+ (6.0f * B + 30.0f * C) * x * x
+				+ (-12.0f * B - 48.0f * C) * x
+				+ (8.0f * B + 24.0f * C));
+		return 0.0f;
+	}
 	float filter(float x, float y) const
 	{
-		if (fabsf(x) <= 0.5f && fabs(y) <= 0.5f)
-		{
-			return 1.0f;
-		}
-		return 0;
+		return mitchell1D(x) * mitchell1D(y);
 	}
 	int size() const
 	{
-		return 0;
+		return 2;
 	}
 };
 

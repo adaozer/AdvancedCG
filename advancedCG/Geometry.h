@@ -91,20 +91,22 @@ public:
 		return true;
 	}
 
-	bool mollerTrumbore(const Ray& r, float& t) const {
+	bool mollerTrumbore(const Ray& r, float& t) const
+	{
+		Vec3 E1 = vertices[1].p - vertices[0].p;
+		Vec3 E2 = vertices[2].p - vertices[0].p;
+		Vec3 P = r.dir.cross(E2);
+		float det = E1.dot(P);
+		if (fabsf(det) < EPSILON) return false;
+		float invDet = 1.0f / det;
 		Vec3 T = r.o - vertices[0].p;
-		Vec3 p = r.dir.cross(e2);
-		float det = e1.dot(p);
-		if (abs(det) < EPSILON) return false;
-		float invDet = 1.f / det;
-		float beta = T.dot(p) * invDet;
-		if (beta < 0.f || beta > 1.f) return false;
-		Vec3 q = T.cross(e1);
-		float gamma = r.dir.dot(q) * invDet;
-		if (gamma < 0.f || gamma > 1.f || (beta + gamma) > 1.f) return false;
-		t = e2.dot(q) * invDet;
-		if (t < 0.f) return false;
-		return true;
+		float u = T.dot(P) * invDet;
+		if (u < 0.0f || u > 1.0f) return false;
+		Vec3 Q = T.cross(E1);
+		float v = r.dir.dot(Q) * invDet;
+		if (v < 0.0f || (u + v) > 1.0f) return false;
+		t = E2.dot(Q) * invDet;
+		return t > 0.0f;
 	}
 
 	void interpolateAttributes(const float alpha, const float beta, const float gamma, Vec3& interpolatedNormal, float& interpolatedU, float& interpolatedV) const
@@ -222,24 +224,181 @@ public:
 	AABB bounds;
 	BVHNode* r;
 	BVHNode* l;
-	// This can store an offset and number of triangles in a global triangle list for example
-	// But you can store this however you want!
-	// unsigned int offset;
-	// unsigned char num;
+	unsigned int offset;
+	unsigned char num;
+
 	BVHNode()
 	{
 		r = NULL;
 		l = NULL;
+		offset = 0;
+		num = 0;
 	}
-	// Note there are several options for how to implement the build method. Update this as required
+
+	bool isLeaf() { return num > 0; }
+
+	void buildRecursive(std::vector<Triangle>& triangles, std::vector<unsigned int>& indices, int start, int end)
+	{
+		// Compute bounds for all triangles in range
+		bounds.reset();
+		for (int i = start; i < end; i++)
+			for (int j = 0; j < 3; j++)
+				bounds.extend(triangles[indices[i]].vertices[j].p);
+
+		int count = end - start;
+
+		if (count <= MAXNODE_TRIANGLES)
+		{
+			offset = (unsigned int)start;
+			num = (unsigned char)count;
+			return;
+		}
+
+		// Compute centroid bounds for SAH binning
+		AABB centroidBounds;
+		centroidBounds.reset();
+		for (int i = start; i < end; i++)
+			centroidBounds.extend(triangles[indices[i]].centre());
+
+		int bestAxis = -1;
+		int bestBin = -1;
+		float bestCost = FLT_MAX;
+		float parentArea = bounds.area();
+
+		for (int axis = 0; axis < 3; axis++)
+		{
+			float axisMin = centroidBounds.min.coords[axis];
+			float axisMax = centroidBounds.max.coords[axis];
+			if (axisMax - axisMin < EPSILON) continue;
+
+			struct Bin { AABB bounds; int count; };
+			Bin bins[BUILD_BINS];
+			for (int b = 0; b < BUILD_BINS; b++) { bins[b].count = 0; bins[b].bounds.reset(); }
+
+			for (int i = start; i < end; i++)
+			{
+				float cv = triangles[indices[i]].centre().coords[axis];
+				int b = (int)(BUILD_BINS * (cv - axisMin) / (axisMax - axisMin));
+				b = std::min(b, BUILD_BINS - 1);
+				bins[b].count++;
+				for (int j = 0; j < 3; j++)
+					bins[b].bounds.extend(triangles[indices[i]].vertices[j].p);
+			}
+
+			// Evaluate each split candidate
+			for (int split = 1; split < BUILD_BINS; split++)
+			{
+				AABB leftBounds, rightBounds;
+				leftBounds.reset(); rightBounds.reset();
+				int leftN = 0, rightN = 0;
+
+				for (int b = 0; b < split; b++)
+					if (bins[b].count > 0)
+					{
+						leftBounds.extend(bins[b].bounds.min);
+						leftBounds.extend(bins[b].bounds.max);
+						leftN += bins[b].count;
+					}
+				for (int b = split; b < BUILD_BINS; b++)
+					if (bins[b].count > 0)
+					{
+						rightBounds.extend(bins[b].bounds.min);
+						rightBounds.extend(bins[b].bounds.max);
+						rightN += bins[b].count;
+					}
+
+				if (leftN == 0 || rightN == 0) continue;
+
+				float cost = TRAVERSE_COST + ((float)leftN * leftBounds.area() + (float)rightN * rightBounds.area()) / parentArea * TRIANGLE_COST;
+				if (cost < bestCost)
+				{
+					bestCost = cost;
+					bestAxis = axis;
+					bestBin = split;
+				}
+			}
+		}
+
+		// If splitting costs more than a leaf, make a leaf
+		if (bestAxis == -1 || bestCost >= (float)count * TRIANGLE_COST)
+		{
+			offset = (unsigned int)start;
+			num = (unsigned char)count;
+			return;
+		}
+
+		// Partition indices by best split
+		float axisMin = centroidBounds.min.coords[bestAxis];
+		float axisMax = centroidBounds.max.coords[bestAxis];
+		auto pivot = std::partition(indices.begin() + start, indices.begin() + end,
+			[&](unsigned int idx)
+			{
+				float cv = triangles[idx].centre().coords[bestAxis];
+				int b = (int)(BUILD_BINS * (cv - axisMin) / (axisMax - axisMin));
+				b = std::min(b, BUILD_BINS - 1);
+				return b < bestBin;
+			});
+
+		int mid = (int)(pivot - indices.begin());
+		if (mid == start || mid == end)
+		{
+			offset = (unsigned int)start;
+			num = (unsigned char)count;
+			return;
+		}
+
+		l = new BVHNode();
+		r = new BVHNode();
+		l->buildRecursive(triangles, indices, start, mid);
+		r->buildRecursive(triangles, indices, mid, end);
+		num = 0;
+	}
+
 	void build(std::vector<Triangle>& inputTriangles)
 	{
-		// Add BVH building code here
+		if (inputTriangles.empty()) return;
+
+		std::vector<unsigned int> indices((unsigned int)inputTriangles.size());
+		for (unsigned int i = 0; i < (unsigned int)inputTriangles.size(); i++) indices[i] = i;
+
+		buildRecursive(inputTriangles, indices, 0, (int)inputTriangles.size());
+
+		// Reorder triangles to match index order
+		std::vector<Triangle> reordered(inputTriangles.size());
+		for (unsigned int i = 0; i < (unsigned int)inputTriangles.size(); i++)
+			reordered[i] = inputTriangles[indices[i]];
+		inputTriangles = reordered;
 	}
+
 	void traverse(const Ray& ray, const std::vector<Triangle>& triangles, IntersectionData& intersection)
 	{
-		// Add BVH Traversal code here
+		if (!bounds.rayAABB(ray)) return;
+
+		if (isLeaf())
+		{
+			for (unsigned int i = offset; i < offset + num; i++)
+			{
+				float t, u, v;
+				if (triangles[i].rayIntersect(ray, t, u, v))
+				{
+					if (t < intersection.t)
+					{
+						intersection.t = t;
+						intersection.ID = i;
+						intersection.alpha = u;
+						intersection.beta = v;
+						intersection.gamma = 1.0f - (u + v);
+					}
+				}
+			}
+		}
+		else
+		{
+			l->traverse(ray, triangles, intersection);
+			r->traverse(ray, triangles, intersection);
+		}
 	}
+
 	IntersectionData traverse(const Ray& ray, const std::vector<Triangle>& triangles)
 	{
 		IntersectionData intersection;
@@ -247,9 +406,25 @@ public:
 		traverse(ray, triangles, intersection);
 		return intersection;
 	}
+
 	bool traverseVisible(const Ray& ray, const std::vector<Triangle>& triangles, const float maxT)
 	{
-		// Add visibility code here
-		return true;
+		if (!bounds.rayAABB(ray)) return true;
+
+		if (isLeaf())
+		{
+			for (unsigned int i = offset; i < offset + num; i++)
+			{
+				float t;
+				if (triangles[i].mollerTrumbore(ray, t))
+					if (t < maxT) return false;
+			}
+			return true;
+		}
+		else
+		{
+			if (!l->traverseVisible(ray, triangles, maxT)) return false;
+			return r->traverseVisible(ray, triangles, maxT);
+		}
 	}
 };

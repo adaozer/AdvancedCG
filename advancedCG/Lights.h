@@ -131,31 +131,121 @@ class EnvironmentMap : public Light
 {
 public:
 	Texture* env;
+	std::vector<float> marginalCDF;      // size H+1
+	std::vector<float> conditionalCDF;   // size H*(W+1), row-major
+	std::vector<float> rowWeights;       // size H, unnormalised row sums * sinTheta
+	float totalWeight;
+
 	EnvironmentMap(Texture* _env)
 	{
 		env = _env;
+		build();
 	}
+
+	void build()
+	{
+		int W = env->width, H = env->height;
+		conditionalCDF.resize(H * (W + 1));
+		marginalCDF.resize(H + 1);
+		rowWeights.resize(H);
+
+		for (int j = 0; j < H; j++)
+		{
+			float sinTheta = sinf(M_PI * (j + 0.5f) / H);
+			float rowSum = 0.0f;
+			conditionalCDF[j * (W + 1)] = 0.0f;
+			for (int i = 0; i < W; i++)
+			{
+				rowSum += env->texels[j * W + i].Lum();
+				conditionalCDF[j * (W + 1) + i + 1] = rowSum;
+			}
+			// Normalise conditional CDF for this row (sinTheta cancels within a row)
+			if (rowSum > 0.0f)
+				for (int i = 1; i <= W; i++)
+					conditionalCDF[j * (W + 1) + i] /= rowSum;
+			else
+				for (int i = 1; i <= W; i++)
+					conditionalCDF[j * (W + 1) + i] = (float)i / W;
+
+			rowWeights[j] = rowSum * sinTheta;
+		}
+
+		// Build marginal CDF over rows (weighted by sinTheta for spherical Jacobian)
+		marginalCDF[0] = 0.0f;
+		for (int j = 0; j < H; j++)
+			marginalCDF[j + 1] = marginalCDF[j] + rowWeights[j];
+		totalWeight = marginalCDF[H];
+		if (totalWeight > 0.0f)
+			for (int j = 1; j <= H; j++)
+				marginalCDF[j] /= totalWeight;
+		else
+			for (int j = 1; j <= H; j++)
+				marginalCDF[j] = (float)j / H;
+	}
+
 	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
 	{
-		// Assignment: Update this code to importance sampling lighting based on luminance of each pixel
-		Vec3 wi = SamplingDistributions::uniformSampleSphere(sampler->next(), sampler->next());
-		pdf = SamplingDistributions::uniformSpherePDF(wi);
+		int W = env->width, H = env->height;
+		float r1 = sampler->next();
+		float r2 = sampler->next();
+
+		// Invert marginal CDF to pick a row
+		int j = (int)(std::lower_bound(marginalCDF.begin(), marginalCDF.end(), r1) - marginalCDF.begin()) - 1;
+		j = std::max(0, std::min(H - 1, j));
+
+		// Invert conditional CDF to pick a column within that row
+		float* rowCDF = conditionalCDF.data() + j * (W + 1);
+		int i = (int)(std::lower_bound(rowCDF, rowCDF + W + 1, r2) - rowCDF) - 1;
+		i = std::max(0, std::min(W - 1, i));
+
+		// Convert pixel centre to spherical direction
+		float u = (i + 0.5f) / W;
+		float v = (j + 0.5f) / H;
+		float phi = 2.0f * M_PI * u;
+		float theta = M_PI * v;
+		float sinTheta = sinf(theta);
+
+		Vec3 wi;
+		wi.x = sinTheta * cosf(phi);
+		wi.y = cosf(theta);
+		wi.z = sinTheta * sinf(phi);
+
 		reflectedColour = evaluate(wi);
+		pdf = PDF(shadingData, wi);
 		return wi;
 	}
+
 	Colour evaluate(const Vec3& wi)
 	{
 		float u = atan2f(wi.z, wi.x);
 		u = (u < 0.0f) ? u + (2.0f * M_PI) : u;
 		u = u / (2.0f * M_PI);
-		float v = acosf(wi.y) / M_PI;
+		float v = acosf(std::max(-1.0f, std::min(1.0f, wi.y))) / M_PI;
 		return env->sample(u, v);
 	}
+
 	float PDF(const ShadingData& shadingData, const Vec3& wi)
 	{
-		// Assignment: Update this code to return the correct PDF of luminance weighted importance sampling
-		return SamplingDistributions::uniformSpherePDF(wi);
+		if (totalWeight <= 0.0f) return SamplingDistributions::uniformSpherePDF(wi);
+
+		float u = atan2f(wi.z, wi.x);
+		u = (u < 0.0f) ? u + (2.0f * M_PI) : u;
+		u = u / (2.0f * M_PI);
+		float v = acosf(std::max(-1.0f, std::min(1.0f, wi.y))) / M_PI;
+
+		float sinTheta = sinf(M_PI * v);
+		if (sinTheta < 1e-6f) return 0.0f;
+
+		int i = std::max(0, std::min(env->width - 1, (int)(u * env->width)));
+		int j = std::max(0, std::min(env->height - 1, (int)(v * env->height)));
+		float lum = env->texels[j * env->width + i].Lum();
+
+		// p(w) = L(u,v) * W * H / (totalWeight * 2*pi^2)
+		// Derived from: p(u,v) = L * sinTheta * W * H / totalWeight
+		//               p(w)   = p(u,v) / (2*pi^2 * sinTheta)  [Jacobian sphere->UV]
+		return (lum * env->width * env->height) / (totalWeight * 2.0f * M_PI * M_PI);
 	}
+
 	bool isArea()
 	{
 		return false;
@@ -189,9 +279,8 @@ public:
 	}
 	Vec3 sampleDirectionFromLight(Sampler* sampler, float& pdf)
 	{
-		// Replace this tabulated sampling of environment maps
-		Vec3 wi = SamplingDistributions::uniformSampleSphere(sampler->next(), sampler->next());
-		pdf = SamplingDistributions::uniformSpherePDF(wi);
-		return wi;
+		ShadingData dummy;
+		Colour col;
+		return sample(dummy, sampler, col, pdf);
 	}
 };
