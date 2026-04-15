@@ -159,7 +159,6 @@ public:
 				rowSum += env->texels[j * W + i].Lum();
 				conditionalCDF[j * (W + 1) + i + 1] = rowSum;
 			}
-			// Normalise conditional CDF for this row (sinTheta cancels within a row)
 			if (rowSum > 0.0f)
 				for (int i = 1; i <= W; i++)
 					conditionalCDF[j * (W + 1) + i] /= rowSum;
@@ -170,7 +169,6 @@ public:
 			rowWeights[j] = rowSum * sinTheta;
 		}
 
-		// Build marginal CDF over rows (weighted by sinTheta for spherical Jacobian)
 		marginalCDF[0] = 0.0f;
 		for (int j = 0; j < H; j++)
 			marginalCDF[j + 1] = marginalCDF[j] + rowWeights[j];

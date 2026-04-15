@@ -82,54 +82,35 @@ public:
 		return Colour(0.f, 0.f, 0.f);
 		
 	}
-	Colour pathTrace(Ray& r, Colour& pathThroughput, int depth, Sampler* sampler)
-	{
-		Colour L(0.0f, 0.0f, 0.0f);
-		Ray currentRay = r;
 
-		for (int d = 0; ; d++)
-		{
-			IntersectionData intersection = scene->traverse(currentRay);
-			ShadingData shadingData = scene->calculateShadingData(intersection, currentRay);
+Colour pathTraceRecursive(Ray& r, Colour& pathThroughput, int depth, Sampler* sampler) {
+		IntersectionData intersection = scene->traverse(r);
+		ShadingData shadingData = scene->calculateShadingData(intersection, r);
+		if (shadingData.t < FLT_MAX) {
+			if (shadingData.bsdf->isLight()) {
+				return (depth == 0) ? shadingData.bsdf->emit(shadingData, shadingData.wo) : Colour(0.f, 0.f, 0.f);
 
-			if (shadingData.t == FLT_MAX)
-			{
-				L = L + pathThroughput * scene->background->evaluate(currentRay.dir);
-				break;
 			}
+			Colour direct = pathThroughput * computeDirect(shadingData, sampler);
+			if (depth > 10) return direct;
+			Colour indirect;
+			float pdf;	
+			Vec3 wi = shadingData.bsdf->sample(shadingData, sampler, indirect, pdf);
+			r.init(shadingData.x + (wi * EPSILON), wi);
+			float cosine = std::max(Dot(wi, shadingData.sNormal), 0.f);
+			pathThroughput = pathThroughput * indirect * cosine / pdf;
 
-			if (shadingData.bsdf->isLight())
-			{
-				if (d == 0)
-					L = L + pathThroughput * shadingData.bsdf->emit(shadingData, shadingData.wo);
-				break;
+			if (depth > 3) {
+				float rrp = std::min(pathThroughput.Lum(), 1.f);
+				if (sampler->next() < rrp) {
+					pathThroughput = pathThroughput / rrp;
+					return direct + pathTraceRecursive(r, pathThroughput, depth + 1, sampler);
+				}
+				else return direct;
 			}
-
-			L = L + pathThroughput * computeDirect(shadingData, sampler);
-
-			if (d > 10) break;
-
-			if (d > 3)
-			{
-				float q = std::max({ pathThroughput.r, pathThroughput.g, pathThroughput.b });
-				q = std::min(q, 0.95f);
-				if (sampler->next() > q) break;
-				pathThroughput = pathThroughput / q;
-			}
-
-			float pdf;
-			Colour bsdfColour;
-			Vec3 wi = shadingData.bsdf->sample(shadingData, sampler, bsdfColour, pdf);
-
-			if (pdf <= 0.0f) break;
-
-			float cosTheta = fabsf(Dot(wi, shadingData.sNormal));
-			pathThroughput = pathThroughput * bsdfColour * (cosTheta / pdf);
-
-			currentRay = Ray(shadingData.x + wi * EPSILON, wi);
+			return direct + pathTraceRecursive(r, pathThroughput, depth + 1, sampler);
 		}
-
-		return L;
+		return scene->background->evaluate(r.dir) * pathThroughput;
 	}
 
 	Colour direct(Ray& r, Sampler* sampler)
@@ -206,8 +187,7 @@ public:
 			threads[i]->join();
 			delete threads[i];
 		}
-		// Single display pass after all tiles finish — avoids per-pixel overhead
-		// inside threads and keeps canvas writes off the hot path
+
 		for (unsigned int y = 0; y < film->height; y++)
 		{
 			for (unsigned int x = 0; x < film->width; x++)
@@ -231,10 +211,9 @@ public:
 				float py = y + samplers[threadID].next();
 				Ray ray = scene->camera.generateRay(px, py);
 				Colour throughput(1.0f, 1.0f, 1.0f);
-				Colour col = pathTrace(ray, throughput, 0, &samplers[threadID]);
+				Colour col = pathTraceRecursive(ray, throughput, 0, &samplers[threadID]);
 				//Colour col = viewNormals(ray);
 				//Colour col = albedo(ray);
-				// Firefly clamp: cap luminance so rare bright paths don't dominate
 				float lum = col.Lum();
 				if (lum > 10.0f) col = col * (10.0f / lum);
 				film->splat(px, py, col);

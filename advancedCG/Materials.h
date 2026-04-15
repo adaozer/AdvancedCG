@@ -109,8 +109,7 @@ public:
 	}
 	float PDF(const ShadingData& shadingData, const Vec3& wi)
 	{
-		Vec3 wiLocal = shadingData.frame.toLocal(wi);
-		return SamplingDistributions::cosineHemispherePDF(wiLocal);
+		return SamplingDistributions::cosineHemispherePDF(wi);
 	}
 	bool isPureSpecular()
 	{
@@ -137,23 +136,21 @@ public:
 	}
 	Vec3 sample(const ShadingData& shadingData, Sampler* sampler, Colour& reflectedColour, float& pdf)
 	{
-		// Replace this with Mirror sampling code
-		Vec3 wi = SamplingDistributions::cosineSampleHemisphere(sampler->next(), sampler->next());
-		pdf = wi.z / M_PI;
-		reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) / M_PI;
-		wi = shadingData.frame.toWorld(wi);
+		Vec3 woWorld = shadingData.frame.toLocal(shadingData.wo);
+		woWorld.x = -woWorld.x;
+		woWorld.y = -woWorld.y;
+		Vec3 wi = shadingData.frame.toWorld(woWorld);
+		reflectedColour = albedo->sample(shadingData.tu, shadingData.tv) / Dot(wi, shadingData.sNormal);
+		pdf = 1;
 		return wi;
 	}
 	Colour evaluate(const ShadingData& shadingData, const Vec3& wi)
 	{
-		// Replace this with Mirror evaluation code
-		return albedo->sample(shadingData.tu, shadingData.tv) / M_PI;
+		return albedo->sample(shadingData.tu, shadingData.tv) / Dot(wi, shadingData.sNormal);
 	}
 	float PDF(const ShadingData& shadingData, const Vec3& wi)
 	{
-		// Replace this with Mirror PDF
-		Vec3 wiLocal = shadingData.frame.toLocal(wi);
-		return SamplingDistributions::cosineHemispherePDF(wiLocal);
+		return 0;
 	}
 	bool isPureSpecular()
 	{
@@ -248,9 +245,7 @@ public:
 	}
 	float PDF(const ShadingData& shadingData, const Vec3& wi)
 	{
-		// Replace this with GlassPDF
-		Vec3 wiLocal = shadingData.frame.toLocal(wi);
-		return SamplingDistributions::cosineHemispherePDF(wiLocal);
+		return 0;
 	}
 	bool isPureSpecular()
 	{

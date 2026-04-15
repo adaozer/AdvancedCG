@@ -239,7 +239,6 @@ public:
 
 	void buildRecursive(std::vector<Triangle>& triangles, std::vector<unsigned int>& indices, int start, int end)
 	{
-		// Compute bounds for all triangles in range
 		bounds.reset();
 		for (int i = start; i < end; i++)
 			for (int j = 0; j < 3; j++)
@@ -254,7 +253,6 @@ public:
 			return;
 		}
 
-		// Compute centroid bounds for SAH binning
 		AABB centroidBounds;
 		centroidBounds.reset();
 		for (int i = start; i < end; i++)
@@ -285,7 +283,6 @@ public:
 					bins[b].bounds.extend(triangles[indices[i]].vertices[j].p);
 			}
 
-			// Evaluate each split candidate
 			for (int split = 1; split < BUILD_BINS; split++)
 			{
 				AABB leftBounds, rightBounds;
@@ -319,7 +316,6 @@ public:
 			}
 		}
 
-		// If splitting costs more than a leaf, make a leaf
 		if (bestAxis == -1 || bestCost >= (float)count * TRIANGLE_COST)
 		{
 			offset = (unsigned int)start;
@@ -327,7 +323,6 @@ public:
 			return;
 		}
 
-		// Partition indices by best split
 		float axisMin = centroidBounds.min.coords[bestAxis];
 		float axisMax = centroidBounds.max.coords[bestAxis];
 		auto pivot = std::partition(indices.begin() + start, indices.begin() + end,
@@ -363,7 +358,6 @@ public:
 
 		buildRecursive(inputTriangles, indices, 0, (int)inputTriangles.size());
 
-		// Reorder triangles to match index order
 		std::vector<Triangle> reordered(inputTriangles.size());
 		for (unsigned int i = 0; i < (unsigned int)inputTriangles.size(); i++)
 			reordered[i] = inputTriangles[indices[i]];
